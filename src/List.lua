@@ -1,27 +1,54 @@
+-- Main LibLootSummary List class definition and utility functions
+
+
+--[[
+LibLootSummary.List - Main class for loot and currency summary logic
+
+Purpose: Handles collection, formatting, and output of item/currency summaries to chat.
+Features: Supports configurable options, integration with LibAddonMenu, and developer diagnostics.
+
+Key Methods:
+- AddCurrency, AddItem, AddItemId, AddItemLink: Add entries to summary
+- Print: Output formatted summary to chat
+- GenerateLam2ItemOptions/GenerateLam2LootOptions: Create LibAddonMenu controls
+
+Maintainer Notes:
+- Inline comments clarify function purpose and logic
+- Lint errors for missing ESO globals are expected in local dev, not in-game
+- LAM2 options are generated via a data-driven approach in lam2OptionData
+]]
+
 local lls = LibLootSummary
 
+-- Constant for the character length of an icon in chat
+local ICON_CHAT_LINK_LENGTH = 2
+
+
+-- List class: Handles loot/currency summary logic and chat output
 local List = ZO_Object:Subclass()
 lls.List = List
 
 local addQuantity, appendText, coalesce, defaultChat, getChildTable, mergeTables, sortByCurrencyName, sortByItemName, sortByQuality, isSetItemNotCollected, formatCount, getPlural
 local qualityChoices, qualityChoicesValues, delimiterChoices, delimiterChoicesValues
-local generateLam2EnabledOption, generateLam2QualityOption, generateLam2IconsOption, generateLam2CollectionOption, generateLam2IconSizeOption, generateLam2TraitsOption,
-      generateLam2HideSingularOption, generateLam2CombineDuplicatesOption, generateLam2SortOption, generateLam2DelimiterOption, generateLam2LinkStyleOption,
-      generateLam2CounterOption
+local createLam2Option
 local GetItemLinkFunctionalQuality, ZO_CachedStrFormat, GetCurrencyName = GetItemLinkFunctionalQuality, ZO_CachedStrFormat, GetCurrencyName
 local zo_strsub, zo_strgsub, zo_strlen, zo_min, zo_strformat = zo_strsub, zo_strgsub, zo_strlen, zo_min, zo_strformat
 local tostring, pairs, ipairs = tostring, pairs, ipairs
 local tableInsert, stringFormat, tableSort, stringFind = table.insert, string.format, table.sort, string.find
 local linkFormat = "|H%s:item:%s:1:1:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0|h|h"
 local collectionIcon = "EsoUI/Art/treeicons/gamepad/achievement_categoryicon_collections.dds"
-local CHAT_DEFAULTS, OPTIONS_DEFAULTS, RENAMED_OPTIONS
+local CHAT_DEFAULTS, OPTIONS_DEFAULTS, RENAMED_OPTIONS, lam2OptionData
 
+
+-- Create a new List instance with provided options
 function lls.List:New(options)
     local instance = ZO_Object.New(self)
     instance:Initialize(options)
     return instance
 end
 
+
+-- Initialize List instance, set defaults and chat proxy
 function lls.List:Initialize(params)
     self:Reset()
     if params == nil then
@@ -30,91 +57,120 @@ function lls.List:Initialize(params)
     for chatSetting, chatDefault in pairs(CHAT_DEFAULTS) do
         self[chatSetting] = coalesce(params[chatSetting], chatDefault)
     end
-    
-    -- Require a Print function in the chat proxy that is passed
+    -- Ensure chat proxy has Print function
     if type(self.chat.Print) ~= "function" then
         self.chat = CHAT_DEFAULTS.chat
     end
-    
     self.options = params
     self.defaults = {}
     self.counter = 0
 end
 
+
+-- Add a currency entry to the summary
 function lls.List:AddCurrency(currencyType, quantity)
+    assert(currencyType ~= nil, "LibLootSummary: currencyType must not be nil.")
+    assert(type(quantity) == "number" and quantity >= 0, "LibLootSummary: quantity must be a non-negative number.")
     if not self:IsEnabled() then
         return
     end
-
     addQuantity(self.currencyList, self.currencyKeys, currencyType, quantity, self:GetOption('combineDuplicates'))
 end
+
+-- Add an item from bag/slot to the summary
 function lls.List:AddItem(bagId, slotIndex, quantity)
+    assert(bagId ~= nil and slotIndex ~= nil, "LibLootSummary: bagId and slotIndex must not be nil.")
     if not self:IsEnabled() then
         return
     end
-
     if not quantity then
         local stackSize, maxStackSize = GetSlotStackSize(bagId, slotIndex)
         quantity = zo_min(stackSize, maxStackSize)
     end
-
+    assert(type(quantity) == "number" and quantity > 0, "LibLootSummary: quantity must be a positive number.")
     self:AddItemLink(GetItemLink(bagId, slotIndex, self:GetOption('linkStyle')), quantity, true)
 end
+
+-- Add an item by itemId to the summary
 function lls.List:AddItemId(itemId, quantity)
+    assert(itemId ~= nil, "LibLootSummary: itemId must not be nil.")
+    assert(type(quantity) == "number" and quantity > 0, "LibLootSummary: quantity must be a positive number.")
     if not self:IsEnabled() then
         return
     end
-
     self:AddItemLink(stringFormat(linkFormat, self:GetOption('linkStyle'), itemId), quantity, true)
 end
+
+-- Add an item by itemLink to the summary
 function lls.List:AddItemLink(itemLink, quantity, dontChangeStyle)
+    assert(itemLink ~= nil, "LibLootSummary: itemLink must not be nil.")
+    assert(type(quantity) == "number" and quantity > 0, "LibLootSummary: quantity must be a positive number.")
     if not self:IsEnabled() then
         return
     end
-
     if not dontChangeStyle then
-        itemLink = zo_strgsub(itemLink, "|H[0-1]:", "|H"..tostring(self:GetOption('linkStyle'))..":")
+        itemLink = zo_strgsub(itemLink, "|H[0-1]:", "|H"..tostring(self:GetOption('linkStyle')).. ":")
     end
-
     addQuantity(self.itemList, self.itemKeys, itemLink, quantity, self:GetOption('combineDuplicates'))
 end
 
-function lls.List:GenerateLam2ItemOptions(addonName, options, defaults, ...)
+
+local function generateLam2Options(self, addonName, options, defaults, optionType, ...)
     self:SetOptions(options, defaults, ...)
-    return generateLam2EnabledOption(self, addonName, SI_LLS_ITEM_SUMMARY, SI_LLS_ITEM_SUMMARY_TOOLTIP),
-        generateLam2QualityOption(self, SI_LLS_MIN_ITEM_QUALITY, SI_LLS_MIN_ITEM_QUALITY_TOOLTIP),
-        generateLam2IconsOption(self, SI_LLS_SHOW_ITEM_ICONS, SI_LLS_SHOW_ITEM_ICONS_TOOLTIP),
-        generateLam2CollectionOption(self, SI_LLS_SHOW_ITEM_NOT_COLLECTED, SI_LLS_SHOW_ITEM_NOT_COLLECTED_TOOLTIP),
-        generateLam2IconSizeOption(self),
-        generateLam2TraitsOption(self, SI_LLS_SHOW_ITEM_TRAITS, SI_LLS_SHOW_ITEM_TRAITS_TOOLTIP),
-        generateLam2HideSingularOption(self,  SI_LLS_HIDE_ITEM_SINGLE_QTY, SI_LLS_HIDE_ITEM_SINGLE_QTY_TOOLTIP),
-        generateLam2CombineDuplicatesOption(self),
-        generateLam2SortOption(self),
-        generateLam2DelimiterOption(self),
-        generateLam2LinkStyleOption(self),
-        generateLam2CounterOption(self)
+
+    local SIs = {
+        ITEM = {
+            SUMMARY = SI_LLS_ITEM_SUMMARY,
+            SUMMARY_TOOLTIP = SI_LLS_ITEM_SUMMARY_TOOLTIP,
+            MIN_QUALITY = SI_LLS_MIN_ITEM_QUALITY,
+            MIN_QUALITY_TOOLTIP = SI_LLS_MIN_ITEM_QUALITY_TOOLTIP,
+            SHOW_ICONS = SI_LLS_SHOW_ITEM_ICONS,
+            SHOW_ICONS_TOOLTIP = SI_LLS_SHOW_ITEM_ICONS_TOOLTIP,
+            SHOW_NOT_COLLECTED = SI_LLS_SHOW_ITEM_NOT_COLLECTED,
+            SHOW_NOT_COLLECTED_TOOLTIP = SI_LLS_SHOW_ITEM_NOT_COLLECTED_TOOLTIP,
+            SHOW_TRAITS = SI_LLS_SHOW_ITEM_TRAITS,
+            SHOW_TRAITS_TOOLTIP = SI_LLS_SHOW_ITEM_TRAITS_TOOLTIP,
+            HIDE_SINGLE_QTY = SI_LLS_HIDE_ITEM_SINGLE_QTY,
+            HIDE_SINGLE_QTY_TOOLTIP = SI_LLS_HIDE_ITEM_SINGLE_QTY_TOOLTIP,
+        },
+        LOOT = {
+            SUMMARY = SI_LLS_LOOT_SUMMARY,
+            SUMMARY_TOOLTIP = SI_LLS_LOOT_SUMMARY_TOOLTIP,
+            MIN_QUALITY = SI_LLS_MIN_LOOT_QUALITY,
+            MIN_QUALITY_TOOLTIP = SI_LLS_MIN_LOOT_QUALITY_TOOLTIP,
+            SHOW_ICONS = SI_LLS_SHOW_LOOT_ICONS,
+            SHOW_ICONS_TOOLTIP = SI_LLS_SHOW_LOOT_ICONS_TOOLTIP,
+            SHOW_NOT_COLLECTED = SI_LLS_SHOW_LOOT_NOT_COLLECTED,
+            SHOW_NOT_COLLECTED_TOOLTIP = SI_LLS_SHOW_LOOT_NOT_COLLECTED_TOOLTIP,
+            SHOW_TRAITS = SI_LLS_SHOW_LOOT_TRAITS,
+            SHOW_TRAITS_TOOLTIP = SI_LLS_SHOW_LOOT_TRAITS_TOOLTIP,
+            HIDE_SINGLE_QTY = SI_LLS_HIDE_LOOT_SINGLE_QTY,
+            HIDE_SINGLE_QTY_TOOLTIP = SI_LLS_HIDE_LOOT_SINGLE_QTY_TOOLTIP,
+        },
+    }
+
+    local strings = SIs[optionType]
+	local controls = {}
+	for _, data in ipairs(lam2OptionData) do
+		table.insert(controls, createLam2Option(self, data, addonName, strings))
+	end
+	return unpack(controls)
 end
 
+-- Generate LibAddonMenu option controls for item summary settings
+function lls.List:GenerateLam2ItemOptions(addonName, options, defaults, ...)
+    return generateLam2Options(self, addonName, options, defaults, 'ITEM', ...)
+end
+
+
+-- Generate LibAddonMenu option controls for loot summary settings
 function lls.List:GenerateLam2LootOptions(addonName, options, defaults, ...)
-    self:SetOptions(options, defaults, ...)
-    return generateLam2EnabledOption(self, addonName, SI_LLS_LOOT_SUMMARY, SI_LLS_LOOT_SUMMARY_TOOLTIP),
-        generateLam2QualityOption(self, SI_LLS_MIN_LOOT_QUALITY, SI_LLS_MIN_LOOT_QUALITY_TOOLTIP),
-        generateLam2IconsOption(self, SI_LLS_SHOW_LOOT_ICONS, SI_LLS_SHOW_LOOT_ICONS_TOOLTIP),
-        generateLam2CollectionOption(self, SI_LLS_SHOW_LOOT_NOT_COLLECTED, SI_LLS_SHOW_LOOT_NOT_COLLECTED_TOOLTIP),
-        generateLam2IconSizeOption(self),
-        generateLam2TraitsOption(self, SI_LLS_SHOW_LOOT_TRAITS, SI_LLS_SHOW_LOOT_TRAITS_TOOLTIP),
-        generateLam2HideSingularOption(self, SI_LLS_HIDE_LOOT_SINGLE_QTY, SI_LLS_HIDE_LOOT_SINGLE_QTY_TOOLTIP),
-        generateLam2CombineDuplicatesOption(self),
-        generateLam2SortOption(self),
-        generateLam2DelimiterOption(self),
-        generateLam2LinkStyleOption(self),
-        generateLam2CounterOption(self)
+    return generateLam2Options(self, addonName, options, defaults, 'LOOT', ...)
 end
 
 function lls.List:GetOption(key)
-    if OPTIONS_DEFAULTS[key] == nil then
-        return nil
-    end
+    assert(key ~= nil, "LibLootSummary: option key must not be nil.")
+    assert(OPTIONS_DEFAULTS[key] ~= nil, "LibLootSummary: option key '" .. tostring(key) .. "' is not valid.")
     if self.options and self.options[key] ~= nil then
         return self.options[key]
     end
@@ -183,7 +239,7 @@ function lls.List:Print()
                     summary = appendText(itemString, summary, maxLength, lines, self:GetOption('delimiter'), self.prefix, iconStringLength)
                 end
             else
-                d("LibLootSummary has somehow lost track of how many " .. tostring(itemLink) .. " should be printed.  Please report this bug on ESOUI.com.")
+                error("LibLootSummary: itemList missing quantities for " .. tostring(itemLink))
             end
         end
     end
@@ -212,7 +268,7 @@ function lls.List:Print()
                 summary = appendText(moneyString, summary, maxLength, lines, self:GetOption('delimiter'), self.prefix, iconStringLength)
             end
         else
-            d("LibLootSummary has somehow lost track of how many " .. GetCurrencyName(currencyType, false) .. " should be printed.  Please report this bug on ESOUI.com.")
+            error("LibLootSummary: currencyList missing quantities for " .. GetCurrencyName(currencyType, false))
         end
     end
     
@@ -230,6 +286,9 @@ function lls.List:Print()
     end
 
     -- Print to chat
+    if #lines == 0 then
+        error("LibLootSummary: Print called but no summary lines were generated.")
+    end
     for i, line in ipairs(lines) do
         self.chat:Print(self.prefix .. line .. self.suffix)
     end
@@ -298,7 +357,7 @@ function lls.List:SetOptions(options, defaults, ...)
         defaults = getChildTable(defaults, optionsKeys)
         local parent = options
         options = getChildTable(parent, optionsKeys)
-        options = setmetatable({},
+        options = setmetatable({}, 
             {
                 __index = function(_, key)
                     local childTable = getChildTable(parent, optionsKeys)
@@ -401,11 +460,12 @@ function addQuantity(list, keys, key, quantity, combineDuplicates)
 end
 
 function appendText(text, currentText, maxLength, lines, delimiter, prefix, iconStringLength)
+    iconStringLength = iconStringLength or 0
     local currentTextLength = ZoUTF8StringLength(currentText)
     local stringLength = currentTextLength + ZoUTF8StringLength(delimiter) + ZoUTF8StringLength(text)
     -- icons only take up the space of two characters
     if iconStringLength > 0 then
-        stringLength = stringLength - iconStringLength + 2 
+        stringLength = stringLength - iconStringLength + ICON_CHAT_LINK_LENGTH 
     end
     if stringLength > maxLength then
         tableInsert(lines, currentText)
@@ -484,225 +544,55 @@ function getPlural(countText)
     return plural
 end
 
-function generateLam2EnabledOption(self, addonName, name, tooltip)
-    return 
-        -- Enabled
-        {
-            type = "checkbox",
-            name = GetString(name),
-            tooltip = zo_strformat(tooltip, addonName),
-            getFunc = function() return self:IsEnabled() end,
-            setFunc = function(value) self:SetEnabled(value) end,
-            default = self.defaults.enabled,
-        }
-end
-function generateLam2HideSingularOption(self, name, tooltip)
-    return 
-        -- HideSingularQuantities
-        {
-            type = "checkbox",
-            name = GetString(name),
-            tooltip = GetString(tooltip),
-            getFunc = function() return self:GetOption('hideSingularQuantities') end,
-            setFunc = function(value) self:SetHideSingularQuantities(value) end,
-            default = self.defaults.hideSingularQuantities,
-            disabled = function() return not self:IsEnabled() end,
-        }
-end
-function generateLam2CombineDuplicatesOption(self)
-    return 
-        -- Combine duplicates
-        {
-            type = "checkbox",
-            name = GetString(SI_LLS_COMBINE_DUPLICATES),
-            tooltip = GetString(SI_LLS_COMBINE_DUPLICATES_TOOLTIP),
-            getFunc = function() return self:GetOption('combineDuplicates') end,
-            setFunc = function(value) self:SetCombineDuplicates(value) end,
-            default = self.defaults.combineDuplicates,
-            disabled = function() return not self:IsEnabled() end,
-        }
-end
-function generateLam2IconsOption(self, name, tooltip)
-    return 
-        -- Show Icons
-        {
-            type = "checkbox",
-            name = GetString(name),
-            tooltip = GetString(tooltip),
-            getFunc = function() return self:GetOption('showIcon') end,
-            setFunc = function(value) self:SetShowIcon(value) end,
-            default = self.defaults.showIcon,
-            disabled = function() return not self:IsEnabled() end,
-        }
-end
-function generateLam2CollectionOption(self, name, tooltip)
-    return 
-        -- Show not collected piece
-        {
-            type = "checkbox",
-            name = zo_strformat(GetString(name), zo_iconFormat(collectionIcon, '120%', '120%')),
-            tooltip = GetString(tooltip),
-            getFunc = function() return self:GetOption('showNotCollected') end,
-            setFunc = function(value) self:SetShowNotCollected(value) end,
-            default = self.defaults.showNotCollected,
-            disabled = function() return not self:IsEnabled() end,
-        }
-end
-function generateLam2IconSizeOption(self)
-    return 
-        -- Set icons size
-        {
-            type = "slider",
-            min = 50,
-            max = 200,
-            step = 10,
-            decimals = 0,
-            clampInput = true,
-            name = GetString(SI_LLS_ICON_SIZE),
-            tooltip = GetString(SI_LLS_ICON_SIZE_TOOLTIP),
-            getFunc = function() return self:GetOption('iconSize') end,
-            setFunc = function(value) self:SetIconSize(value) end,
-            default = self.defaults.iconSize,
-            disabled =
-                function()
-                    return not self:IsEnabled() 
-                           or (not self:GetOption('showIcon') 
-                               and not self:GetOption('showNotCollected'))
-                end,
-        }
-end
-function generateLam2QualityOption(self, name, tooltip)
-    return 
-        -- Minimum Quality
-        {
-            type = "dropdown",
-            choices = qualityChoices,
-            choicesValues = qualityChoicesValues,
-            sort = "numericvalue-up",
-            name = GetString(name),
-            tooltip = GetString(tooltip),
-            getFunc = function() return self:GetOption('minQuality') end,
-            setFunc = function(value) self:SetMinQuality(value) end,
-            default = self.defaults.minQuality,
-            disabled = function() return not self:IsEnabled() end,
-        }
-end
-function generateLam2TraitsOption(self, name, tooltip)
-    return 
-        -- Show Traits
-        {
-            type = "checkbox",
-            name = GetString(name),
-            tooltip = GetString(tooltip),
-            getFunc = function() return self:GetOption('showTrait') end,
-            setFunc = function(value) self:SetShowTrait(value) end,
-            default = self.defaults.showTrait,
-            disabled = function() return not self:IsEnabled() end,
-        }
-end
-function generateLam2SortOption(self)
-    return 
-        -- Sort order
-        {
-            type = "dropdown",
-            name = GetString(SI_GAMEPAD_BANK_SORT_ORDER_HEADER),
-            tooltip = GetString(SI_LLS_SORT_ORDER_TOOLTIP),
-            choices =
-                {
-                    ZO_GenerateCommaSeparatedListWithoutAnd({
-                        GetString('SI_TRADINGHOUSEFEATURECATEGORY', TRADING_HOUSE_FEATURE_CATEGORY_QUALITY),
-                        GetString('SI_TRADINGHOUSELISTINGSORTTYPE', TRADING_HOUSE_LISTING_SORT_TYPE_NAME) }
-                    ),
-                    GetString('SI_TRADINGHOUSELISTINGSORTTYPE', TRADING_HOUSE_LISTING_SORT_TYPE_NAME),
-                    GetString(SI_ITEMTYPE0)
-                },
-            choicesValues =
-                {
-                    'quality',
-                    'name',
-                    'none'
-                },
-            getFunc =
-                function()
-                    return self:GetOption('sortedByQuality') and 'quality'
-                           or self:GetOption('sorted') and 'name'
-                           or 'none'
-                end,
-            setFunc = 
-                function(value)
-                    if value == 'quality' then
-                        self:SetSortedByQuality(true)
-                        self:SetSorted(false)
-                    elseif value == 'name' then
-                        self:SetSorted(true)
-                        self:SetSortedByQuality(false)
-                    else
-                        self:SetSorted(false)
-                        self:SetSortedByQuality(false)
-                    end
-                end,
-            default = self.defaults.sortedByQuality and 'quality' or self.defaults.sorted and 'name' or 'none',
-            disabled = function() return not self:IsEnabled() end,
-        }
-end
-function generateLam2DelimiterOption(self)
-    return 
-        -- delimiter
-        {
-            type = "dropdown",
-            name = GetString(SI_LLS_DELIMITER),
-            tooltip = GetString(SI_LLS_DELIMITER_TOOLTIP),
-            choices = delimiterChoices,
-            choicesValues = delimiterChoicesValues,
-            getFunc = function() return self:GetOption('delimiter') end,
-            setFunc = function(value) self:SetDelimiter(value) end,
-            default = self.defaults.delimiter,
-            disabled = function() return not self:IsEnabled() end,
-        }
-end
-function generateLam2LinkStyleOption(self)
-    return 
-        -- delimiter
-        {
-            type = "dropdown",
-            name = GetString(SI_LLS_LINK_STYLE),
-            tooltip = GetString(SI_LLS_LINK_STYLE_TOOLTIP),
-            choices =
-                {
-                    stringFormat(linkFormat, LINK_STYLE_BRACKETS, 54172),
-                    stringFormat(linkFormat, LINK_STYLE_DEFAULT, 54172),
-                },
-            choicesValues =
-                {
-                    LINK_STYLE_BRACKETS,
-                    LINK_STYLE_DEFAULT
-                },
-            getFunc = function() return self:GetOption('linkStyle') end,
-            setFunc = function(value) self:SetLinkStyle(value) end,
-            default = self.defaults.linkStyle,
-            disabled = function() return not self:IsEnabled() end,
-        }
-end
-function generateLam2CounterOption(self)
-    if self.counterText == nil or self.counterText == '' then
-        return
+createLam2Option = function(self, optionData, addonName, strings)
+    local name = strings[optionData.name] or optionData.name
+    local tooltip = strings[optionData.tooltip] or optionData.tooltip
+    local option = {
+        type = optionData.type,
+        name = GetString(name),
+        tooltip = GetString(tooltip),
+        default = self.defaults[optionData.option],
+        disabled = function() return not self:IsEnabled() end,
+    }
+
+    if optionData.type == "checkbox" then
+        option.getFunc = function() return self:GetOption(optionData.option) end
+        option.setFunc = function(value) self:SetOption(optionData.option, value) end
+    elseif optionData.type == "slider" then
+        option.min = optionData.min
+        option.max = optionData.max
+        option.step = optionData.step
+        option.decimals = optionData.decimals
+        option.clampInput = optionData.clampInput
+        option.getFunc = function() return self:GetOption(optionData.option) end
+        option.setFunc = function(value) self:SetOption(optionData.option, value) end
+        option.disabled = function()
+            return not self:IsEnabled() or (not self:GetOption('showIcon') 
+                                           and not self:GetOption('showNotCollected'))
+        end
+    elseif optionData.type == "dropdown" then
+        option.choices = optionData.choices
+        option.choicesValues = optionData.choicesValues
+        option.sort = optionData.sort
+        option.getFunc = optionData.getFunc and optionData.getFunc(self) or function() return self:GetOption(optionData.option) end
+        option.setFunc = optionData.setFunc and optionData.setFunc(self) or function(value) self:SetOption(optionData.option, value) end
     end
-    local language = GetCVar("Language.2")
-    local pluralCounterText = getPlural(self.counterText)
-    local counterTitleText = language == "en" and zo_strformat("<<t:1>>", pluralCounterText) or pluralCounterText
-    local name = zo_strformat(GetString(SI_LLS_SHOW_COUNTER), counterTitleText)
-    local tooltip = zo_strformat(GetString(SI_LLS_SHOW_COUNTER_TOOLTIP), pluralCounterText)
-    return 
-        -- Show Counter
-        {
-            type = "checkbox",
-            name = name,
-            tooltip = tooltip,
-            getFunc = function() return self:GetOption('showCounter') end,
-            setFunc = function(value) self:SetShowCounter(value) end,
-            default = self.defaults.showCounter,
-            disabled = function() return not self:IsEnabled() end,
-        }
+
+    if optionData.option == 'enabled' then
+        option.tooltip = zo_strformat(GetString(tooltip), addonName)
+        option.disabled = nil
+    elseif optionData.option == 'showNotCollected' then
+        option.name = zo_strformat(GetString(name), zo_iconFormat(collectionIcon, '120%', '120%'))
+    elseif optionData.option == 'showCounter' then
+        if self.counterText == nil or self.counterText == '' then return end
+        local language = GetCVar("Language.2")
+        local pluralCounterText = getPlural(self.counterText)
+        local counterTitleText = language == "en" and zo_strformat("<<t:1>>", pluralCounterText) or pluralCounterText
+        option.name = zo_strformat(GetString(SI_LLS_SHOW_COUNTER), counterTitleText)
+        option.tooltip = zo_strformat(GetString(SI_LLS_SHOW_COUNTER_TOOLTIP), pluralCounterText)
+    end
+
+    return option
 end
 
 function getChildTable(parent, childPath)
@@ -778,3 +668,56 @@ for _, delimiterChoice in ipairs(delimiterChoicesValues) do
     delimiterChoice = zo_strgsub(delimiterChoice, "\n", "\\n")
     table.insert(delimiterChoices, zo_strformat(GetString(SI_LLS_QUOTES), delimiterChoice))
 end
+
+--[[ Data for generating LAM2 option controls ]]
+lam2OptionData = {
+    { option = 'enabled', name = 'SUMMARY', tooltip = 'SUMMARY_TOOLTIP', type = 'checkbox' },
+    { option = 'minQuality', name = 'MIN_QUALITY', tooltip = 'MIN_QUALITY_TOOLTIP', type = 'dropdown', choices = qualityChoices, choicesValues = qualityChoicesValues, sort = "numericvalue-up" },
+    { option = 'showIcon', name = 'SHOW_ICONS', tooltip = 'SHOW_ICONS_TOOLTIP', type = 'checkbox' },
+    { option = 'showNotCollected', name = 'SHOW_NOT_COLLECTED', tooltip = 'SHOW_NOT_COLLECTED_TOOLTIP', type = 'checkbox' },
+    { option = 'iconSize', name = SI_LLS_ICON_SIZE, tooltip = SI_LLS_ICON_SIZE_TOOLTIP, type = 'slider', min = 50, max = 200, step = 10, decimals = 0, clampInput = true },
+    { option = 'showTrait', name = 'SHOW_TRAITS', tooltip = 'SHOW_TRAITS_TOOLTIP', type = 'checkbox' },
+    { option = 'hideSingularQuantities', name = 'HIDE_SINGLE_QTY', tooltip = 'HIDE_SINGLE_QTY_TOOLTIP', type = 'checkbox' },
+    { option = 'combineDuplicates', name = SI_LLS_COMBINE_DUPLICATES, tooltip = SI_LLS_COMBINE_DUPLICATES_TOOLTIP, type = 'checkbox' },
+    { option = 'sorted', name = GetString(SI_GAMEPAD_BANK_SORT_ORDER_HEADER), tooltip = GetString(SI_LLS_SORT_ORDER_TOOLTIP), type = 'dropdown',
+        choices = {
+            ZO_GenerateCommaSeparatedListWithoutAnd({
+                GetString('SI_TRADINGHOUSEFEATURECATEGORY', TRADING_HOUSE_FEATURE_CATEGORY_QUALITY),
+                GetString('SI_TRADINGHOUSELISTINGSORTTYPE', TRADING_HOUSE_LISTING_SORT_TYPE_NAME) })
+            ,
+            GetString('SI_TRADINGHOUSELISTINGSORTTYPE', TRADING_HOUSE_LISTING_SORT_TYPE_NAME),
+            GetString(SI_ITEMTYPE0)
+        },
+        choicesValues = { 'quality', 'name', 'none' },
+        getFunc = function(self)
+            return function()
+                return self:GetOption('sortedByQuality') and 'quality'
+                       or self:GetOption('sorted') and 'name'
+                       or 'none'
+            end
+        end,
+        setFunc = function(self)
+            return function(value)
+                if value == 'quality' then
+                    self:SetSortedByQuality(true)
+                    self:SetSorted(false)
+                elseif value == 'name' then
+                    self:SetSorted(true)
+                    self:SetSortedByQuality(false)
+                else
+                    self:SetSorted(false)
+                    self:SetSortedByQuality(false)
+                end
+            end
+        end,
+    },
+    { option = 'delimiter', name = SI_LLS_DELIMITER, tooltip = SI_LLS_DELIMITER_TOOLTIP, type = 'dropdown', choices = delimiterChoices, choicesValues = delimiterChoicesValues },
+    { option = 'linkStyle', name = SI_LLS_LINK_STYLE, tooltip = SI_LLS_LINK_STYLE_TOOLTIP, type = 'dropdown',
+        choices = {
+            stringFormat(linkFormat, LINK_STYLE_BRACKETS, 54172),
+            stringFormat(linkFormat, LINK_STYLE_DEFAULT, 54172),
+        },
+        choicesValues = { LINK_STYLE_BRACKETS, LINK_STYLE_DEFAULT }
+    },
+    { option = 'showCounter', name = SI_LLS_SHOW_COUNTER, tooltip = SI_LLS_SHOW_COUNTER_TOOLTIP, type = 'checkbox' },
+}
