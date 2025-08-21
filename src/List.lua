@@ -287,7 +287,10 @@ function lls.List:Print()
 
     -- Print to chat
     if #lines == 0 then
-        error("LibLootSummary: Print called but no summary lines were generated.")
+        if self:IsEnabled() then
+            error("LibLootSummary: Print called but no summary lines were generated.")
+        end
+        return
     end
     for i, line in ipairs(lines) do
         self.chat:Print(self.prefix .. line .. self.suffix)
