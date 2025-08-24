@@ -288,7 +288,8 @@ function lls.List:Print()
     -- Print to chat
     if #lines == 0 then
         if self:IsEnabled() then
-            error("LibLootSummary: Print called but no summary lines were generated.")
+            -- LibLootSummary: Print called but no summary lines were generated.
+            -- This is not an error, just means there was nothing to print.
         end
         return
     end

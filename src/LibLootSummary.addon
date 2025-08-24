@@ -1,9 +1,10 @@
 ## Title: LibLootSummary
 ## Author: silvereyes
+## Maintainer: dlrgames
 ## Description: A library to assist with printing lists of items to the chat window.
 ## Version: 3.1.5
-## AddOnVersion: 30104
-## OptionalDependsOn: LibChatMessage>=1.2.2
+## AddOnVersion: 30105
+## OptionalDependsOn: LibChatMessage>=118
 ## IsLibrary: true
 ## APIVersion: 101047 101048
 
